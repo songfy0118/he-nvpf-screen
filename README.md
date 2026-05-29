@@ -25,10 +25,36 @@ GPU/DFT** 的前端：组成生成 → 化学硬筛 → proxy 打分 → rule-ca
 
 ---
 
-## Quick start / 快速开始
+## 1. Get the code / 获取代码
+
+You only need **git** (or just a browser) and **Python ≥ 3.9**.
+只需要 **git**（或一个浏览器）和 **Python ≥ 3.9**。
+
+### Option A — clone with git (recommended) / 用 git 克隆（推荐）
 
 ```bash
-pip install pymatgen
+git clone https://github.com/songfy0118/he-nvpf-screen.git
+cd he-nvpf-screen
+```
+
+### Option B — download the ZIP (no git needed) / 下载 ZIP（不用装 git）
+
+1. Open <https://github.com/songfy0118/he-nvpf-screen>
+2. Click the green **Code** button → **Download ZIP**.
+3. Unzip it, then `cd` into the unzipped `he-nvpf-screen` folder.
+
+打开上面的链接 → 点绿色 **Code** 按钮 → **Download ZIP** → 解压 → 进入解压出的
+`he-nvpf-screen` 文件夹。
+
+---
+
+## 2. Install & run / 安装并运行
+
+The runnable core (stages 1–3 + ranking) needs **exactly one** package: `pymatgen`.
+可运行的核心（1–3 阶段 + 排序）**只需要一个**依赖：`pymatgen`。
+
+```bash
+pip install pymatgen        # or: pip install -r requirements.txt
 
 # 1) auto-generate and score the candidate pool  /  自动生成并打分候选池
 python scripts/run_screen.py --out candidates.csv --top 25
@@ -40,9 +66,99 @@ python scripts/run_screen.py --input examples/my_compositions.csv --out my_score
 python scripts/validate_literature.py
 ```
 
+> A harmless `UserWarning: No ionic radius for Sn2+` may print — pymatgen lacks
+> that one Shannon radius and the code falls back automatically. It does not
+> affect results. 会打印一句无害的 `Sn2+` 半径警告，代码有 fallback，不影响结果。
+
 ---
 
-## Where do the thousands of compositions come from? / 那成千上万种配方哪来的？
+## 3. How to verify it works / 如何确认跑成功
+
+This was run end-to-end on a clean machine (Python 3.14, pymatgen 2026.5).
+Your numbers should match closely. 下面是在干净环境实测的输出，你的结果应基本一致。
+
+**`python scripts/run_screen.py` should print something like:**
+
+```
+generated............. 48144
+passed hard screen.... 47347
+triage................ {'reject': 25956, 'active_learning_pool': 17340, 'exploration': 4051}
+
+Top 25 by priority_score:
+formula                                          x nd    PP    FR    VA    cap    pri  triage
+Na3(V1.9Cr0.033333Ti0.033333Zr0.033334)(PO4)2F3 0.1  3  0.73  0.63  0.93  127.9  0.694  exploration
+...
+wrote -> candidates.csv
+```
+
+**`python scripts/validate_literature.py` should print a table where the four
+real published materials all get scored (not crashed) and the pristine NVPF
+control is correctly demoted to `reject`:**
+
+```
+composition                                  Sconf    PP    FR    VA    cap   pri  triage
+ACS Nano 2025  V1.9(Fe,Ni,Co,Mg,Cr)0.02       0.28  0.67  0.55  0.94  128.3 0.655  exploration
+...
+pristine NVPF (control)                       0.00  0.81  0.43  0.99  128.3 0.663  reject
+```
+
+✅ **Success checklist / 成功标志:**
+- both scripts exit without a traceback (the `Sn2+` warning is fine);
+- `candidates.csv` is created in the current folder;
+- `run_screen.py` reports ~48k generated and ~47k passing the hard screen.
+
+两个脚本不报错（`Sn2+` 警告除外）、当前目录生成了 `candidates.csv`、生成数约 4.8 万、
+过筛约 4.7 万 —— 就说明跑通了。
+
+---
+
+## 4. What each file does / 每个文件干什么
+
+### `henvpf/` — core package (runs now) / 核心包（现在就能跑）
+
+| File / 文件 | What it does / 作用 |
+|---|---|
+| `__init__.py` | Package init; exposes submodules and `__version__`. 包入口。 |
+| `elements.py` | **The chemistry knowledge base.** The 24-element M-site dopant pool + V, with curated per-element data: allowed oxidation states, fluoride/phosphate-forming tendency, F-stabilising tendency, heavy/toxic/costly flags, priority tier. Physical radii/masses come from pymatgen. 元素化学知识表：24 个掺杂元素的氧化态、成氟化物/磷酸盐倾向、F 稳定性、毒性/成本/优先级。 |
+| `composition.py` | **Stage 1 — generate candidates.** Combinatorially enumerates `Na₃(V₂₋ₓ D…)(PO₄)₂F₃` formulas under the rules (`V ≥ 1.4` ⇒ `0.1 ≤ x ≤ 0.6`, dopant-count coupled to `x`), and computes configurational entropy `Sconfig` + entropy band. ~48k candidates in seconds. 组成生成：按规则枚举配方并算构型熵。 |
+| `charge_solver.py` | **Explicit charge-balance solver.** For each candidate, searches dopant oxidation states × mean-V valence (2.5–4.5) × Na vacancy (0–0.3) for the lowest-difficulty neutral assignment; outputs the compensation mode + a 0–1 difficulty score. 显式电荷求解器：搜索可行的电荷平衡方案并打难度分。 |
+| `screening.py` | **Stage 2 — chemical hard screen.** Deterministic pass/reject *before* any scoring: toxicity, M-site occupancy = 2, V-fraction floor, charge feasibility, ionic-radius deviation < 15%, theoretical-capacity floor. 化学硬筛：打分前的确定性淘汰。 |
+| `scores.py` | **Stage 3 — the three proxy scores.** Computes risk sub-components (NaF / MFₓ / MPO₄ / NASICON-competition / radius-mismatch) and combines them into `phase_purity_score`, `f_retention_score`, `v_activity_retention_score`, plus theoretical capacity & molar mass, with hard gates. 三个 proxy 打分 + 风险子项 + 闸门。 |
+| `ranking.py` | **Rule-calibrated ranking + triage.** Aggregates the three scores (weights 0.35/0.30/0.25 + 0.10 entropy tie-breaker) into one `priority_score` and sorts each candidate into `priority` / `exploration` / `reject` / `active_learning_pool`. 加权排序 + 分流。 |
+| `userinput.py` | **Score your own compositions.** Parses a user CSV (compact `V:1.9;Cr:0.03;…` form *or* one-column-per-element form) into candidates so they run through the same scoring. 读用户自定义配方 CSV。 |
+| `pipeline.py` | **Orchestrator.** Ties stages 1→2→3→rank together and writes the output CSV. Called by the CLI. 端到端编排器，CLI 调它。 |
+
+### `scripts/` — command-line entry points / 命令行入口
+
+| File / 文件 | What it does / 作用 |
+|---|---|
+| `run_screen.py` | The main CLI. Auto-generates+scores the pool, or scores a `--input` CSV; prints a summary + top-N table and writes the full CSV. Flags: `--out --step --tiers --full-grid --entropy-floor --input --max --top`. 主命令行。 |
+| `validate_literature.py` | Runs the scorer on real published HE-NVPF compositions as a sanity check — a good proxy should not reject known-good materials. 用已发表配方自检。 |
+
+### `integrations/` — documented stubs (need compute/data) / 接口桩（需算力/数据，未实现）
+
+Ordered per the spec's "MLIP-before-VASP" calculation order. 按「先 MLIP 后 VASP」排序。
+
+| File / 文件 | What it would do / 计划做什么 |
+|---|---|
+| `mlip_relax.py` | CHGNet / M3GNet (matgl) / MACE structure relaxation & config search. MLIP 弛豫。 |
+| `dft_labels.py` | VASP refinement + key labels incl. F-vacancy formation energy. VASP 标签。 |
+| `mp_pretrain.py` | Three-tier training data (Materials Project / NASICON / NVPF). 训练数据。 |
+| `bayes_opt.py` | Multi-objective Bayesian optimisation (BoTorch+Ax / pymoo). 多目标贝叶斯优化。 |
+
+### Other files / 其它文件
+
+| File / 文件 | What it is / 是什么 |
+|---|---|
+| `examples/my_compositions.csv` | Example input for `--input`: a handful of compositions in the accepted CSV format. `--input` 的示例输入。 |
+| `candidates.csv` | A pre-generated sample output (the ranked pool) so you can inspect results without running anything. 预生成的示例输出，不跑也能看结果。 |
+| `requirements.txt` | Dependencies. Only `pymatgen` is needed for the runnable core; the rest are commented optional deps for the integration stubs. 依赖清单（核心只需 pymatgen）。 |
+| `.gitignore` | Ignores caches, virtualenvs, and regenerable outputs (`my_scored.csv`, `coarse_pool.csv`, `*.zip`). |
+| `LICENSE` | MIT. |
+
+---
+
+## 5. Where do the thousands of compositions come from? / 那成千上万种配方哪来的？
 
 **You do not type them.** `henvpf/composition.py` *enumerates* them
 combinatorially from three inputs:
@@ -65,55 +181,23 @@ If you *do* have specific compositions, feed a CSV with `--input` (see
 
 ---
 
-## What is implemented (runs now) / 已实现（可运行）
+## 6. Key rules / 关键规则
 
-| Stage / 阶段 | Module / 模块 | Spec / 对应文档 |
-|---|---|---|
-| 1. Composition generation / 组成生成 | `henvpf/composition.py` | main §1A / addendum §1–3 |
-| 2. Chemical hard screen / 化学硬筛 | `henvpf/screening.py` | main §2 |
-| — Explicit charge solver / 显式电荷求解器 | `henvpf/charge_solver.py` | addendum §4 |
-| 3. Proxy scores / 三个 proxy 打分 | `henvpf/scores.py` | addendum §5/§6/§7 |
-| Ranking + triage / 排序 + 分流 | `henvpf/ranking.py` | addendum §8 |
-| Orchestrator / 编排 | `henvpf/pipeline.py` | main §1–8 |
-| User input / 用户输入 | `henvpf/userinput.py` | — |
-
-Key rules / 关键规则:
-
-- **V ≥ 1.4** → `0.1 ≤ x ≤ 0.6`; V occupies ≥ 70 % of the M site.
-  V 占 M 位 ≥ 70%。
-- **Dopant count coupled to x** / 掺杂数耦合 x (addendum §3):
-  `x ≤ 0.2 → 3`, `x ≥ 0.3 → 4–5`; low-dose 5-dopant sets are flagged
-  `low_dose_multi_dopant_risk`.
-- **Entropy bands** / 构型熵分级 (addendum §1):
-  `<1.0R co-doping / 1.0–1.5R medium / ≥1.5R strict high-entropy`. Entropy is a
-  ranking tie-breaker only. 熵只作排序 tie-breaker。
-- **Explicit charge solver** / 显式电荷求解器 (addendum §4): searches allowed
-  oxidation states × mean-V valence (2.5–4.5) × Na vacancy (0–0.3); outputs
-  `charge_balance_mode`, `na_delta_required`, `mean_v_valence`,
-  `valence_feasible_flag`, `charge_compensation_difficulty`.
-- **Three proxy scores** follow the addendum formulas/weights exactly:
-  三个 proxy 分完全按 addendum 公式权重：
-  `phase_purity_score`, `f_retention_score`,
-  `v_activity_retention_score` (renamed from `capacity_retention_score`).
-- **Radius mismatch** uses the concentration-weighted HEA δ parameter, so dilute
-  dopants contribute little; δ = 0.15 maps to the 15 % criterion.
-  离子半径失配用浓度加权 δ 参数。
-- **Hard gates** / 硬门槛: `reject / exploration / priority`; gate-rejected but
-  borderline candidates go to `active_learning_pool`.
-
-## Not yet implemented (integration stubs) / 未实现（接口桩）
-
-In `integrations/`, ordered per **addendum §9 (MLIP before VASP)**:
-`integrations/` 下，严格按 **addendum §9「先 MLIP 后 VASP」** 顺序：
-
-- `mlip_relax.py` — CHGNet / M3GNet (matgl) / MACE configuration search (steps 1–3)
-- `dft_labels.py` — VASP refinement + key labels incl. F-vacancy energy (steps 4–6)
-- `mp_pretrain.py` — three-tier training data (Materials Project / NASICON / NVPF)
-- `bayes_opt.py` — multi-objective Bayesian optimisation (step 7; BoTorch+Ax / pymoo)
+- **V ≥ 1.4** → `0.1 ≤ x ≤ 0.6`; V occupies ≥ 70 % of the M site. V 占 M 位 ≥ 70%。
+- **Dopant count coupled to x**: `x ≤ 0.2 → 3`, `x ≥ 0.3 → 4–5`; low-dose 5-dopant
+  sets are flagged `low_dose_multi_dopant_risk`.
+- **Entropy bands**: `<1.0R co-doping / 1.0–1.5R medium / ≥1.5R strict high-entropy`.
+  Entropy is a ranking tie-breaker only. 熵只作排序 tie-breaker。
+- **Explicit charge solver**: searches allowed oxidation states × mean-V valence
+  (2.5–4.5) × Na vacancy (0–0.3).
+- **Three proxy scores**: `phase_purity_score`, `f_retention_score`,
+  `v_activity_retention_score`.
+- **Hard gates**: `reject / exploration / priority`; gate-rejected but borderline
+  candidates go to `active_learning_pool`.
 
 ---
 
-## Output columns / 输出列
+## 7. Output columns / 输出列
 
 `candidates.csv`: `formula, x, n_dopants, v_amount, dopants, sconfig_over_R,
 entropy_band, low_dose_multi_dopant_risk, priority_score, triage,
@@ -124,54 +208,26 @@ phase_gate, f_gate, v_gate`.
 
 ---
 
-## Known calibration limitations / 已知校准缺陷
+## 8. Known calibration limitations / 已知校准缺陷
 
 Honest notes, to be fixed once DFT labels exist. 待 DFT 标签出来后修正。
 
 1. **The F-retention proxy rejects pristine NVPF** as a control, because it
    rewards dopant-driven M–F stabilisation and lacks a baseline term for the
-   intrinsic V–F bond. De-sodiated F stability is the weakest proxy before DFT
-   (addendum §6 warns of this).
-   **F-retention proxy 会把原始 NVPF 对照判成 reject**：它缺一个本征 V–F 键基线项；
-   脱钠态 F 稳定性 DFT 前本就最弱。
+   intrinsic V–F bond. De-sodiated F stability is the weakest proxy before DFT.
+   **F-retention proxy 会把原始 NVPF 对照判成 reject**：缺一个本征 V–F 键基线项。
 2. **The dopant-count rule deprioritises a known-best experimental material**:
    ACS Nano 2025's V₁.₉(Fe,Ni,Co,Mg,Cr)₀.₀₂ is a 5-dopant x = 0.1 formula, which
-   addendum §3 (x ≤ 0.2 → 3 dopants) flags and demotes to `exploration`. The rule
-   is conservative; real winners cluster at very low dose, so the x ceiling and
-   dopant-count rule may need loosening toward the low-dose end.
-   **掺杂数规则会让已知最佳实验材料降级**：那个 5 元 0.02 配方被打 risk 标记降到
-   exploration。规则偏保守，实测 work 的都在极低剂量端。
-3. **Main-spec §7 vs addendum §8 tension**: §7 applies physical-unit thresholds
-   (Eform < 0, Ehull ≤ 0.025 …) to model outputs, but round 1 has no calibrated
-   predictor. This implementation follows the addendum — round 1 ranks on proxy
-   scores only; physical-unit thresholds apply after `dft_labels.py`.
-   **主文档 §7 与 addendum §8 矛盾**：本实现按 addendum，第一轮只用 proxy 排序。
+   the `x ≤ 0.2 → 3 dopants` rule flags and demotes to `exploration`. Real winners
+   cluster at very low dose, so the x ceiling / dopant-count rule may need loosening.
+   **掺杂数规则会让已知最佳实验材料降级**：规则偏保守，实测 work 的都在极低剂量端。
+3. **Round 1 ranks on proxy scores only**; physical-unit thresholds (Eform < 0,
+   Ehull ≤ 0.025 …) apply only after `dft_labels.py` produces calibrated labels.
+   **第一轮只用 proxy 排序**，物理单位阈值要等 DFT 标签出来才用。
 
 ---
 
-## Repository structure / 仓库结构
-
-```
-he-nvpf-screen/
-├── henvpf/              # core package (runs now) / 核心包（可运行）
-│   ├── elements.py          # element pool + curated chemistry table
-│   ├── composition.py       # Stage-1 generation + Sconfig
-│   ├── charge_solver.py     # explicit charge solver (addendum §4)
-│   ├── screening.py         # chemical hard screen (main §2)
-│   ├── scores.py            # 3 proxy scores (addendum §5/6/7)
-│   ├── ranking.py           # rule-calibrated ranking + triage (§8)
-│   ├── userinput.py         # score user-supplied CSV
-│   └── pipeline.py          # orchestrator
-├── integrations/        # documented stubs (need compute/data) / 接口桩
-├── scripts/
-│   ├── run_screen.py        # CLI
-│   └── validate_literature.py
-├── examples/my_compositions.csv
-├── requirements.txt
-└── README.md
-```
-
-## Open-source stack / 开源栈
+## 9. Open-source stack / 开源栈
 
 pymatgen · CHGNet / matgl / mace-torch · mp-api · atomate2 / custodian ·
 CatBoost / XGBoost / LightGBM / scikit-learn · BoTorch + Ax / pymoo / Optuna.
