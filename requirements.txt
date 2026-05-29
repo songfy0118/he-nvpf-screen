@@ -1,0 +1,9 @@
+# core (stages 1-3 + ranking run on these)
+pymatgen>=2024.0.0
+
+# downstream integrations (install as needed, see integrations/)
+# chgnet            # or: matgl  (M3GNet) / mace-torch (MACE)   -- MLIP relaxation
+# mp-api            # Materials Project training data
+# atomate2          # VASP workflow management
+# ax-platform       # multi-objective Bayesian optimisation (pulls in botorch)
+# catboost xgboost lightgbm scikit-learn   # rule-calibrated -> supervised ranker

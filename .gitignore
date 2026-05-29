@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+.DS_Store
+.venv/
+venv/
+env/
+# generated screening outputs (regenerate with run_screen.py)
+my_scored.csv
+coarse_pool.csv
+*.zip
